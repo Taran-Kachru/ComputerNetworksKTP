@@ -1,4 +1,4 @@
-/* user1.cpp  -  KTP sender.  Reads a file and transfers it over a KTP socket.
+/* user1.c  -  KTP sender.  Reads a file and transfers it over a KTP socket.
  *
  * usage: user1 <src_ip> <src_port> <dst_ip> <dst_port> <infile> [stats_out]
  *   binds local (src_ip:src_port), peer (dst_ip:dst_port), sends <infile>.
@@ -14,7 +14,7 @@
 
 static void nap(long ms) {
     struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms % 1000) * 1000000L;
-    nanosleep(&ts, nullptr);
+    nanosleep(&ts, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
     const char *dst_ip = argv[3];
     uint16_t dst_port = htons((uint16_t)atoi(argv[4]));
     const char *infile = argv[5];
-    const char *stats_out = (argc >= 7) ? argv[6] : nullptr;
+    const char *stats_out = (argc >= 7) ? argv[6] : NULL;
 
     FILE *f = fopen(infile, "rb");
     if (!f) { perror("fopen infile"); return 1; }
@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     fclose(f);
 
     /* in-band end-of-stream marker (zero-length message) */
-    while (k_sendto(sock, nullptr, 0, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+    while (k_sendto(sock, NULL, 0, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
         if (k_errno == ENOSPACE) { nap(5); continue; }
         fprintf(stderr, "k_sendto(EOF) failed (err %d)\n", k_errno); return 1;
     }

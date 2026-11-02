@@ -6,16 +6,18 @@ the grader lives in `documentation.txt`; this file is the engineering log.
 
 ## 0. Environment / language decisions
 
-* The spec asks for C (`.c`). The task requires **C++17 compiled with g++**. All sources
-  are therefore `.cpp` and the library is built with `g++ -std=c++17 -Wall -Wextra`.
-  The public API in `ksocket.h` is wrapped in `extern "C"` (guarded by `__cplusplus`) so
-  the five calls + `dropMessage` keep C linkage and C-compatible signatures. Rename and
-  rationale documented in `documentation.txt`.
+* Implemented in **C (C11)**, compiled with `gcc -std=c11 -Wall -Wextra -D_GNU_SOURCE`,
+  as the spec asks: sources are `ksocket.c / initksocket.c / user1.c / user2.c`, header is
+  `ksocket.h`. `-D_GNU_SOURCE` exposes the POSIX/BSD calls used (rand_r, inet_aton,
+  clock_gettime, nanosleep, sem_timedwait, shm_open, pthread_mutexattr_setrobust).
+  The header keeps `extern "C"` guards (under `#ifdef __cplusplus`) so it is also usable
+  from C++, but the library is plain C. Init concurrency uses POSIX threads
+  (pthread_create/join) + a `volatile sig_atomic_t` stop flag.
 * The assignment is Linux-only (System V/POSIX shm, `fork`, process-shared
   `pthread_mutex_t`, `nanosleep`, `kill(pid,0)`, `select`). The development machine is
   Windows + MinGW (no `fork`, no `<sys/shm.h>`). **All building/running/testing is done
   inside a Linux `gcc:13` Docker container** with the project bind-mounted. This is only
-  a build host choice; the submitted code is portable Linux C++17.
+  a build host choice; the submitted code is portable Linux C.
 * Shared memory uses **POSIX shm** (`shm_open`+`mmap`, link with `-lrt -pthread`),
   name `"/ktp_sm"`. Process-shared `pthread_mutex_t` and `sem_t` live inside the region.
 

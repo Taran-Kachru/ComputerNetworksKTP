@@ -2,7 +2,7 @@
 
 An implementation of **KTP (K Transport Protocol)**: a reliable, in-order,
 message-oriented transport layer built on top of unreliable UDP sockets, with
-window-based flow control. Written in **C++17** for Linux.
+window-based flow control. Written in **C (C11)** for Linux.
 
 KTP mirrors the familiar UDP socket API (`socket`, `bind`, `sendto`, `recvfrom`,
 `close`) with `k_`-prefixed calls, but guarantees that every 512-byte message is
@@ -28,17 +28,17 @@ packets.
 | File | Description |
 |------|-------------|
 | `ksocket.h` | Public API, constants, error codes, and packet format |
-| `ksocket.cpp` | Library implementation of the `k_*` calls and `dropMessage` |
+| `ksocket.c` | Library implementation of the `k_*` calls and `dropMessage` |
 | `ktp_internal.h` | Shared-memory layout and helpers (internal) |
-| `initksocket.cpp` | Init process: threads R and S, garbage collector, shared memory |
-| `user1.cpp` / `user2.cpp` | Test sender / receiver (transfer a file end-to-end) |
+| `initksocket.c` | Init process: threads R and S, garbage collector, shared memory |
+| `user1.c` / `user2.c` | Test sender / receiver (transfer a file end-to-end) |
 | `Makefile*` | Build the static library, the init process, and the user programs |
 | `documentation.txt` | Full design writeup, data structures, protocol, and results |
 | `tests/` | Test and experiment scripts |
 
 ## Build
 
-Requires a Linux toolchain (`g++` with C++17, `make`, `ar`). From the project root:
+Requires a Linux toolchain (`gcc` with C11, `make`, `ar`). From the project root:
 
 ```sh
 make            # builds libksocket.a, initksocket, user1, user2

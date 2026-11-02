@@ -3,7 +3,7 @@
 # confirm the GC frees its SM entry.
 cd /work
 pkill -9 -x initksocket 2>/dev/null; pkill -9 -x holder 2>/dev/null; rm -f /dev/shm/ktp_sm; sleep 0.3
-g++ -std=c++17 -Wall -Wextra -O2 tests/holder.cpp -o tests/holder -L. -lksocket -pthread -lrt || exit 1
+gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE tests/holder.c -o tests/holder -L. -lksocket -pthread -lrt || exit 1
 KTP_P=0 ./initksocket >/tmp/init.log 2>&1 &
 INIT=$!
 sleep 0.5

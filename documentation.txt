@@ -56,13 +56,13 @@ speed up development/CI; it does not change behaviour or the header's #define T 
  2. FILES
 ------------------------------------------------------------------------------
  ksocket.h        - public library header (API + all #defines + packet format)
- ksocket.cpp      - library implementation (user-process side of the API)
+ ksocket.c        - library implementation (user-process side of the API)
  ktp_internal.h   - internal header: shared-memory layout + helpers, shared by
                     the library and the init process (kept out of ksocket.h so
                     user programs see only the public API)
- initksocket.cpp  - init process: threads R, S, C + garbage-collector child
- user1.cpp        - test sender (reads a file, k_sendto)
- user2.cpp        - test receiver (k_recvfrom, writes a file)
+ initksocket.c    - init process: threads R, S, C + garbage-collector child
+ user1.c          - test sender (reads a file, k_sendto)
+ user2.c          - test receiver (k_recvfrom, writes a file)
  Makefile.lib     - builds libksocket.a with ar
  Makefile.init    - builds the init executable
  Makefile.user    - builds user1 and user2
@@ -70,27 +70,29 @@ speed up development/CI; it does not change behaviour or the header's #define T 
  tests/           - test scripts and the experiment driver
 
 ------------------------------------------------------------------------------
- 3. C -> C++ RENAME AND THE extern "C" INTERFACE  (design decision)
+ 3. LANGUAGE AND THE HEADER INTERFACE  (design note)
 ------------------------------------------------------------------------------
-The assignment text names the sources ksocket.c / initksocket.c / user1.c /
-user2.c (C).  This submission is written in C++17 and compiled with
-`g++ -std=c++17 -Wall -Wextra`, so the sources use the .cpp extension; the
-header stays ksocket.h.  To keep the API callable exactly like the UDP calls it
-mirrors (unmangled C symbol names, C-compatible signatures), every declaration
-in ksocket.h is wrapped in `extern "C" { ... }` guarded by `#ifdef __cplusplus`.
-A user may therefore include ksocket.h from C or C++ and link libksocket.a the
-same way one links libm.a for sqrt().  C++ is used where it helps (RAII is not
-needed across the POD shared memory, but std::thread / std::atomic are used in
-init, and static_assert enforces that every shared-memory struct is POD).
-SOCK_KTP, T, P, N and the error codes remain plain #defines in ksocket.h, and
-`#define T 5` is present exactly as required.
+The submission is written in C (C11) and compiled with
+`gcc -std=c11 -Wall -Wextra -D_GNU_SOURCE`, exactly as the assignment asks: the
+sources are ksocket.c / initksocket.c / user1.c / user2.c and the header is
+ksocket.h, so a user includes ksocket.h and links libksocket.a the same way one
+links libm.a for sqrt().  (-D_GNU_SOURCE exposes the POSIX/BSD calls used:
+rand_r, inet_aton, clock_gettime, nanosleep, sem_timedwait, shm_open,
+pthread_mutexattr_setrobust, etc.)  The header keeps `#ifdef __cplusplus
+extern "C" { ... }` guards so it may also be included from a C++ translation
+unit without name mangling, but the library itself is plain C.  SOCK_KTP, T, P,
+N and the error codes are plain #defines in ksocket.h, and `#define T 5` is
+present exactly as required.
+
+Concurrency in the init process uses POSIX threads (pthread_create / pthread_join
+for threads R, S, C) and a `volatile sig_atomic_t` stop flag set from the
+SIGINT/SIGTERM handler.
 
 Everything placed in shared memory is plain-old-data (fixed arrays, integers,
-pthread_mutex_t, sem_t).  No std::string/vector/map, no virtual functions, no
-pointers cross the shared-memory boundary.  This is enforced at compile time:
-  static_assert(std::is_trivially_copyable<SendSlot/RecvSlot/SockInfo/
-                ControlReq>::value, ...);
-  static_assert(std::is_standard_layout<SharedMem>::value, ...);
+pthread_mutex_t, sem_t).  No pointers cross the shared-memory boundary.  (For
+documentation/safety, when ksocket.h/ktp_internal.h are compiled as C++ they
+additionally static_assert that every shared struct is trivially copyable and
+standard-layout; in C these structs are POD by construction.)
 
 ------------------------------------------------------------------------------
  4. DATA STRUCTURES
@@ -167,7 +169,7 @@ SharedMem - the whole shared region:
 ------------------------------------------------------------------------------
  5. FUNCTIONS
 ------------------------------------------------------------------------------
---- ksocket.cpp (library) ---
+--- ksocket.c (library) ---
  k_errno_location()  : returns &(per-thread KTP error variable); k_errno macro.
  sm_attach()         : lazily shm_open+mmap the existing SM (created by init).
  dropMessage(p)      : returns 1 with probability p else 0 (rand_r based).
@@ -191,7 +193,7 @@ SharedMem - the whole shared region:
  k_outstanding()     : (helper) number of unacknowledged messages; lets a sender
                        drain before k_close so the file tail is not lost.
 
---- initksocket.cpp (init process) ---
+--- initksocket.c (init process) ---
  clear_sock_dynamic(): reset an entry's dynamic fields (keeps the mutex valid).
  recv_free()         : receiver free space = RECV_BUF_SIZE - (#buffered slots).
  send_ack()/send_data(): build and sendto an ACK / DATA packet.
@@ -386,8 +388,9 @@ T = 5 s as required.
 ------------------------------------------------------------------------------
  12. ENVIRONMENT NOTE
 ------------------------------------------------------------------------------
-The code is portable Linux C++17 (POSIX shared memory, process-shared robust
+The code is portable Linux C (C11 + POSIX: shared memory, process-shared robust
 pthread mutexes, semaphores, select, nanosleep, fork, kill).  It was built and
-tested with g++ 13 inside a Linux container; the development host happened to be
-Windows, but nothing Windows-specific is used.  Link flags: -pthread -lrt.
+tested with gcc 13 inside a Linux container; the development host happened to be
+Windows, but nothing Windows-specific is used.  Compile flags: -std=c11
+-D_GNU_SOURCE; link flags: -pthread -lrt.
 ==============================================================================

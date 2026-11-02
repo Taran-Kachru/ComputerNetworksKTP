@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 cd /work
-g++ -fsanitize=thread -g -std=c++17 -Wall -Wextra ksocket.cpp initksocket.cpp -o initksocket.tsan -pthread -lrt 2>/dev/null
+gcc -fsanitize=thread -g -std=c11 -Wall -Wextra -D_GNU_SOURCE ksocket.c initksocket.c -o initksocket.tsan -pthread -lrt 2>/dev/null
 pkill -9 -x initksocket.tsan 2>/dev/null; pkill -9 -x user1 2>/dev/null; pkill -9 -x user2 2>/dev/null; rm -f /dev/shm/ktp_sm; sleep 0.3
 head -c 20480 /dev/urandom > data/tsan_in.dat     # 40 msgs
 TSAN_OPTIONS=halt_on_error=0 KTP_P=0 setarch "$(uname -m)" -R ./initksocket.tsan >/tmp/tsan_init.log 2>&1 &

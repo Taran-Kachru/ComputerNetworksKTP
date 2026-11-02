@@ -1,4 +1,4 @@
-/* holder.cpp - creates+binds a KTP socket and then blocks forever (never
+/* holder.c - creates+binds a KTP socket and then blocks forever (never
  * calls k_close). Used to test the garbage collector: kill -9 this process
  * and the GC must free its SM entry. Prints the socket id it got. */
 #include "../ksocket.h"

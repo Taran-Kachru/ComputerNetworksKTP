@@ -7,13 +7,13 @@ STAGE=/tmp/ktp_stage
 rm -rf "$STAGE"; mkdir -p "$STAGE/ktp/tests"
 
 # source deliverables
-cp ksocket.h ksocket.cpp ktp_internal.h initksocket.cpp user1.cpp user2.cpp "$STAGE/ktp/"
+cp ksocket.h ksocket.c ktp_internal.h initksocket.c user1.c user2.c "$STAGE/ktp/"
 cp Makefile Makefile.lib Makefile.init Makefile.user "$STAGE/ktp/"
 cp documentation.txt DESIGN_NOTES.md "$STAGE/ktp/"
 
 # test scripts + helpers (not required by the build, included for reproducibility)
 cp tests/*.sh "$STAGE/ktp/tests/" 2>/dev/null || true
-cp tests/errtest.cpp tests/holder.cpp "$STAGE/ktp/tests/" 2>/dev/null || true
+cp tests/errtest.c tests/holder.c "$STAGE/ktp/tests/" 2>/dev/null || true
 cp tests/results.csv "$STAGE/ktp/tests/" 2>/dev/null || true
 
 # tarball

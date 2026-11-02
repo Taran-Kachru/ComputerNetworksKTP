@@ -26,16 +26,16 @@ run_one() {  # $1=tag  $2=initbin  $3=u1  $4=u2
 }
 
 echo "=== building ASan+UBSan variants ==="
-SAN="-fsanitize=address,undefined -fno-omit-frame-pointer -g -std=c++17 -Wall -Wextra"
-g++ $SAN ksocket.cpp initksocket.cpp -o initksocket.asan -pthread -lrt 2>/tmp/bld.log || { echo BUILD_FAIL_ASAN_INIT; cat /tmp/bld.log; }
-g++ $SAN ksocket.cpp user1.cpp -o user1.asan -pthread -lrt 2>>/tmp/bld.log || echo BUILD_FAIL_ASAN_U1
-g++ $SAN ksocket.cpp user2.cpp -o user2.asan -pthread -lrt 2>>/tmp/bld.log || echo BUILD_FAIL_ASAN_U2
+SAN="-fsanitize=address,undefined -fno-omit-frame-pointer -g -std=c11 -Wall -Wextra -D_GNU_SOURCE"
+gcc $SAN ksocket.c initksocket.c -o initksocket.asan -pthread -lrt 2>/tmp/bld.log || { echo BUILD_FAIL_ASAN_INIT; cat /tmp/bld.log; }
+gcc $SAN ksocket.c user1.c -o user1.asan -pthread -lrt 2>>/tmp/bld.log || echo BUILD_FAIL_ASAN_U1
+gcc $SAN ksocket.c user2.c -o user2.asan -pthread -lrt 2>>/tmp/bld.log || echo BUILD_FAIL_ASAN_U2
 echo "=== running ASan+UBSan ==="
 run_one asan initksocket.asan user1.asan user2.asan
 
 echo "=== building TSan init ==="
-TSN="-fsanitize=thread -g -std=c++17 -Wall -Wextra"
-g++ $TSN ksocket.cpp initksocket.cpp -o initksocket.tsan -pthread -lrt 2>/tmp/bld2.log || { echo BUILD_FAIL_TSAN; cat /tmp/bld2.log; }
+TSN="-fsanitize=thread -g -std=c11 -Wall -Wextra -D_GNU_SOURCE"
+gcc $TSN ksocket.c initksocket.c -o initksocket.tsan -pthread -lrt 2>/tmp/bld2.log || { echo BUILD_FAIL_TSAN; cat /tmp/bld2.log; }
 echo "=== running TSan init (normal users) ==="
 run_one tsan initksocket.tsan user1 user2
 

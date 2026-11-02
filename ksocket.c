@@ -1,4 +1,4 @@
-/* ksocket.cpp  -  KTP library (user-process side of the API).
+/* ksocket.c  -  KTP library (user-process side of the API).
  *
  * Implements k_socket, k_bind, k_sendto, k_recvfrom, k_close, dropMessage and
  * the k_stats helper.  socket/bind/close are delegated to the init process over
@@ -19,7 +19,7 @@
 /* ------------------------------------------------------------------ */
 /* Per-thread error variable (the spec's "global error variable").     */
 /* ------------------------------------------------------------------ */
-extern "C" int *k_errno_location(void) {
+int *k_errno_location(void) {
     static __thread int e = 0;
     return &e;
 }
@@ -27,24 +27,24 @@ extern "C" int *k_errno_location(void) {
 /* ------------------------------------------------------------------ */
 /* Shared-memory attachment (lazy, process-lifetime).                  */
 /* ------------------------------------------------------------------ */
-static SharedMem *g_sm = nullptr;
+static SharedMem *g_sm = NULL;
 
 static SharedMem *sm_attach(void) {
     if (g_sm) return g_sm;
     int fd = shm_open(KTP_SHM_NAME, O_RDWR, 0666);
-    if (fd < 0) return nullptr;              /* init process not running */
-    void *p = mmap(nullptr, sizeof(SharedMem), PROT_READ | PROT_WRITE,
+    if (fd < 0) return NULL;                 /* init process not running */
+    void *p = mmap(NULL, sizeof(SharedMem), PROT_READ | PROT_WRITE,
                    MAP_SHARED, fd, 0);
     close(fd);
-    if (p == MAP_FAILED) return nullptr;
-    g_sm = reinterpret_cast<SharedMem *>(p);
+    if (p == MAP_FAILED) return NULL;
+    g_sm = (SharedMem *)p;
     return g_sm;
 }
 
 /* ------------------------------------------------------------------ */
 /* dropMessage: 1 with probability p, else 0.                          */
 /* ------------------------------------------------------------------ */
-extern "C" int dropMessage(float p) {
+int dropMessage(float p) {
     static __thread int seeded = 0;
     static __thread unsigned int seed = 0;
     if (!seeded) {
@@ -72,7 +72,7 @@ static int control_call(SharedMem *sm, ControlReq *out) {
 /* ------------------------------------------------------------------ */
 /* k_socket                                                            */
 /* ------------------------------------------------------------------ */
-extern "C" int k_socket(int domain, int type, int protocol) {
+int k_socket(int domain, int type, int protocol) {
     (void)domain; (void)protocol;
     if (type != SOCK_KTP) { k_errno = EINVAL; return -1; }
     SharedMem *sm = sm_attach();
@@ -90,9 +90,9 @@ extern "C" int k_socket(int domain, int type, int protocol) {
 /* ------------------------------------------------------------------ */
 /* k_bind                                                              */
 /* ------------------------------------------------------------------ */
-extern "C" int k_bind(int sockfd,
-                      const char *src_ip, uint16_t src_port,
-                      const char *dst_ip, uint16_t dst_port) {
+int k_bind(int sockfd,
+           const char *src_ip, uint16_t src_port,
+           const char *dst_ip, uint16_t dst_port) {
     SharedMem *sm = sm_attach();
     if (!sm) { k_errno = ENOTBOUND; return -1; }
     if (sockfd < 0 || sockfd >= N) { k_errno = ENOTBOUND; return -1; }
@@ -119,8 +119,8 @@ extern "C" int k_bind(int sockfd,
 /* k_sendto - enqueue into sender buffer (thread S does the sending).  */
 /* A len==0 call enqueues the in-band end-of-stream (EOF) marker.      */
 /* ------------------------------------------------------------------ */
-extern "C" ssize_t k_sendto(int sockfd, const void *buf, size_t len, int flags,
-                            const struct sockaddr *dest_addr, socklen_t addrlen) {
+ssize_t k_sendto(int sockfd, const void *buf, size_t len, int flags,
+                 const struct sockaddr *dest_addr, socklen_t addrlen) {
     (void)flags; (void)addrlen;
     SharedMem *sm = sm_attach();
     if (!sm) { k_errno = ENOTBOUND; return -1; }
@@ -163,8 +163,8 @@ extern "C" ssize_t k_sendto(int sockfd, const void *buf, size_t len, int flags,
 /* k_recvfrom - return the next in-order message, free its slot.       */
 /* Returns payload bytes (>0), 0 for the EOF marker, -1/ENOMESSAGE.    */
 /* ------------------------------------------------------------------ */
-extern "C" ssize_t k_recvfrom(int sockfd, void *buf, size_t len, int flags,
-                              struct sockaddr *src_addr, socklen_t *addrlen) {
+ssize_t k_recvfrom(int sockfd, void *buf, size_t len, int flags,
+                   struct sockaddr *src_addr, socklen_t *addrlen) {
     (void)flags;
     SharedMem *sm = sm_attach();
     if (!sm) { k_errno = ENOMESSAGE; return -1; }
@@ -202,7 +202,7 @@ extern "C" ssize_t k_recvfrom(int sockfd, void *buf, size_t len, int flags,
 /* ------------------------------------------------------------------ */
 /* k_close                                                             */
 /* ------------------------------------------------------------------ */
-extern "C" int k_close(int sockfd) {
+int k_close(int sockfd) {
     SharedMem *sm = sm_attach();
     if (!sm) { k_errno = ENOTBOUND; return -1; }
     if (sockfd < 0 || sockfd >= N) { k_errno = ENOTBOUND; return -1; }
@@ -218,8 +218,8 @@ extern "C" int k_close(int sockfd) {
 /* ------------------------------------------------------------------ */
 /* k_stats - transmission counters for the experiment.                 */
 /* ------------------------------------------------------------------ */
-extern "C" int k_stats(int sockfd, unsigned long long *tx_total,
-                       unsigned long long *msgs_unique) {
+int k_stats(int sockfd, unsigned long long *tx_total,
+            unsigned long long *msgs_unique) {
     SharedMem *sm = sm_attach();
     if (!sm || sockfd < 0 || sockfd >= N) return -1;
     SockInfo *s = &sm->sock[sockfd];
@@ -230,7 +230,7 @@ extern "C" int k_stats(int sockfd, unsigned long long *tx_total,
     return 0;
 }
 
-extern "C" int k_outstanding(int sockfd) {
+int k_outstanding(int sockfd) {
     SharedMem *sm = sm_attach();
     if (!sm || sockfd < 0 || sockfd >= N) return -1;
     SockInfo *s = &sm->sock[sockfd];

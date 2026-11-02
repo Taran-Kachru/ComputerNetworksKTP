@@ -1,4 +1,4 @@
-/* user2.cpp  -  KTP receiver.  Receives a file over a KTP socket and writes it.
+/* user2.c  -  KTP receiver.  Receives a file over a KTP socket and writes it.
  *
  * usage: user2 <src_ip> <src_port> <dst_ip> <dst_port> <outfile>
  *   binds local (src_ip:src_port), peer (dst_ip:dst_port), writes to <outfile>.
@@ -14,7 +14,7 @@
 
 static void nap(long ms) {
     struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms % 1000) * 1000000L;
-    nanosleep(&ts, nullptr);
+    nanosleep(&ts, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -43,8 +43,8 @@ int main(int argc, char **argv) {
 
     char buf[MSG_SIZE];
     unsigned long long bytes = 0, msgs = 0;
-    while (true) {
-        ssize_t n = k_recvfrom(sock, buf, MSG_SIZE, 0, nullptr, nullptr);
+    while (1) {
+        ssize_t n = k_recvfrom(sock, buf, MSG_SIZE, 0, NULL, NULL);
         if (n < 0) { nap(5); continue; }        /* ENOMESSAGE: retry */
         if (n == 0) break;                       /* EOF marker */
         fwrite(buf, 1, (size_t)n, f);

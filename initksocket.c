@@ -1,4 +1,4 @@
-/* initksocket.cpp  -  KTP init process.
+/* initksocket.c  -  KTP init process.
  *
  * Creates and owns the shared memory and ALL UDP sockets, runs:
  *   thread C : control channel (k_socket / k_bind / k_close) + reaping
@@ -21,12 +21,16 @@
 #include <errno.h>
 #include <time.h>
 #include <arpa/inet.h>
-#include <thread>
-#include <atomic>
+#include <pthread.h>
+#include <stdatomic.h>
 
-static SharedMem *g_sm = nullptr;
-static std::atomic<int> g_stop{0};
-static std::atomic<int> g_dump{0};
+static SharedMem *g_sm = NULL;
+/* C11 atomics: the faithful equivalent of the C++ std::atomic stop/dump flags.
+ * Plain reads/writes on a lock-free atomic_int are atomic (and async-signal-safe
+ * for the store done in the signal handler), so the threads and the handler do
+ * not race. */
+static atomic_int g_stop = 0;
+static atomic_int g_dump = 0;
 static int g_debug = 0;
 #define DBG(...) do { if (g_debug) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
 static pid_t g_gc_pid = -1;
@@ -66,7 +70,8 @@ static void clear_sock_dynamic(SockInfo *s) {
 
 static int recv_free(SockInfo *s) {
     int used = 0;
-    for (int i = 0; i < RECV_RING; i++) if (s->rbuf[i].in_use) used++;
+    int i;
+    for (i = 0; i < RECV_RING; i++) if (s->rbuf[i].in_use) used++;
     return RECV_BUF_SIZE - used;
 }
 
@@ -90,7 +95,8 @@ static void send_data(int fd, uint32_t ip, uint16_t port, const KTPPacket *p) {
 /* Thread C : control channel + reaping of dead entries                */
 /* ------------------------------------------------------------------ */
 static void reap_dead(void) {
-    for (int i = 0; i < N; i++) {
+    int i;
+    for (i = 0; i < N; i++) {
         SockInfo *s = &g_sm->sock[i];
         ktp_lock(&s->lock);
         if (s->state == ST_TO_REAP) {
@@ -104,7 +110,8 @@ static void reap_dead(void) {
 
 static void do_op_socket(ControlReq *r) {
     int id = -1;
-    for (int i = 0; i < N; i++) {
+    int i;
+    for (i = 0; i < N; i++) {
         if (g_sm->sock[i].state == ST_FREE) { id = i; break; }
     }
     if (id < 0) { r->ret = -1; r->err = ENOSPACE; return; }
@@ -159,8 +166,9 @@ static void do_op_close(ControlReq *r) {
     r->ret = 0; r->err = 0;
 }
 
-static void thread_C(void) {
-    while (!g_stop.load()) {
+static void *thread_C(void *arg) {
+    (void)arg;
+    while (!g_stop) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 200000000L;             /* 0.2 s */
@@ -176,9 +184,10 @@ static void thread_C(void) {
             sem_post(&g_sm->sem_done);
         }
         reap_dead();
-        if (g_dump.exchange(0)) {
+        if (atomic_exchange(&g_dump, 0)) {
             int allotted = 0;
-            for (int i = 0; i < N; i++) {
+            int i;
+            for (i = 0; i < N; i++) {
                 SockInfo *s = &g_sm->sock[i];
                 if (s->state != ST_ALLOTTED) continue;
                 allotted++;
@@ -196,6 +205,7 @@ static void thread_C(void) {
             fflush(stderr);
         }
     }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -237,7 +247,7 @@ static void handle_data(SockInfo *s, const KTPPacket *p,
 
     if (seq == s->expected) {                          /* in-order: advance+cascade */
         s->expected = (uint8_t)(s->expected + 1);
-        while (true) {
+        while (1) {
             RecvSlot *nx = &s->rbuf[s->expected % RECV_RING];
             if (nx->in_use && nx->seq == s->expected)
                 s->expected = (uint8_t)(s->expected + 1);
@@ -282,13 +292,15 @@ static void handle_ack(SockInfo *s, const KTPPacket *p) {
     /* older ack: ignore */
 }
 
-static void thread_R(void) {
-    while (!g_stop.load()) {
+static void *thread_R(void *arg) {
+    (void)arg;
+    while (!g_stop) {
         fd_set rfds; FD_ZERO(&rfds);
         int maxfd = -1;
+        int i;
         /* Build the fd set.  state/udp_fd are read under the entry lock so there
          * is no race with thread C creating/closing sockets. */
-        for (int i = 0; i < N; i++) {
+        for (i = 0; i < N; i++) {
             SockInfo *s = &g_sm->sock[i];
             ktp_lock(&s->lock);
             if (s->state == ST_ALLOTTED && s->udp_fd >= 0) {
@@ -298,10 +310,10 @@ static void thread_R(void) {
             ktp_unlock(&s->lock);
         }
         struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 500000;   /* 0.5 s */
-        int rv = (maxfd < 0) ? 0 : select(maxfd + 1, &rfds, nullptr, nullptr, &tv);
+        int rv = (maxfd < 0) ? 0 : select(maxfd + 1, &rfds, NULL, NULL, &tv);
         if (rv <= 0) continue;                      /* timeout / signal: reloop */
 
-        for (int i = 0; i < N; i++) {
+        for (i = 0; i < N; i++) {
             SockInfo *s = &g_sm->sock[i];
             ktp_lock(&s->lock);
             int fd = (s->state == ST_ALLOTTED) ? s->udp_fd : -1;
@@ -332,22 +344,25 @@ static void thread_R(void) {
             }
         }
     }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
 /* Thread S : timeout / retransmit / new send / persist probe / reopen */
 /* ------------------------------------------------------------------ */
-struct OutPkt { int is_ack; int len; KTPPacket pkt; uint8_t aseq, arwnd, aflags; };
+typedef struct { int is_ack; int len; KTPPacket pkt; uint8_t aseq, arwnd, aflags; } OutPkt;
 
-static void thread_S(void) {
+static void *thread_S(void *arg) {
+    (void)arg;
     int disable_persist = getenv("KTP_DISABLE_PERSIST") ? 1 : 0;
-    while (!g_stop.load()) {
+    while (!g_stop) {
         struct timespec req, rem;
         req.tv_sec = 0; req.tv_nsec = S_TICK_NS;
         while (nanosleep(&req, &rem) == -1 && errno == EINTR) req = rem;
-        if (g_stop.load()) break;
+        if (g_stop) break;
 
-        for (int i = 0; i < N; i++) {
+        int i;
+        for (i = 0; i < N; i++) {
             SockInfo *s = &g_sm->sock[i];
 
             OutPkt out[2 * SEND_BUF_SIZE + 2];
@@ -361,14 +376,15 @@ static void thread_S(void) {
 
             /* who is in flight (sent, unacked) ? */
             int had_unacked = 0;
-            for (uint8_t b = s->send_base; ktp_sdiff(s->next_seq, b) > 0; b = (uint8_t)(b + 1)) {
+            uint8_t b;
+            for (b = s->send_base; ktp_sdiff(s->next_seq, b) > 0; b = (uint8_t)(b + 1)) {
                 SendSlot *sl = &s->sbuf[b % SEND_RING];
                 if (sl->in_use && sl->sent) { had_unacked = 1; break; }
             }
 
             /* (1) retransmit all in-flight on timeout (ignores window) */
             if (had_unacked && now - s->timer_ns > T_NS) {
-                for (uint8_t b = s->send_base; ktp_sdiff(s->next_seq, b) > 0; b = (uint8_t)(b + 1)) {
+                for (b = s->send_base; ktp_sdiff(s->next_seq, b) > 0; b = (uint8_t)(b + 1)) {
                     SendSlot *sl = &s->sbuf[b % SEND_RING];
                     if (sl->in_use && sl->sent) {
                         OutPkt *o = &out[nout++];
@@ -387,7 +403,8 @@ static void thread_S(void) {
             /* (2) send new messages that fit in the effective window */
             int eff = s->swnd < s->adv_rwnd ? s->swnd : s->adv_rwnd;
             if (eff < 0) eff = 0;
-            for (int k = 0; k < eff; k++) {
+            int k;
+            for (k = 0; k < eff; k++) {
                 uint8_t seq = (uint8_t)(s->send_base + k);
                 if (ktp_sdiff(s->next_seq, seq) <= 0) break;   /* no such buffered msg */
                 SendSlot *sl = &s->sbuf[seq % SEND_RING];
@@ -443,20 +460,23 @@ static void thread_S(void) {
             }
             ktp_unlock(&s->lock);
 
-            for (int j = 0; j < nout; j++) {
+            int j;
+            for (j = 0; j < nout; j++) {
                 if (out[j].is_ack) send_ack(fd, dip, dport, out[j].aseq, out[j].arwnd, out[j].aflags);
                 else               send_data(fd, dip, dport, &out[j].pkt);
             }
         }
     }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
 /* Garbage collector (separate process)                                */
 /* ------------------------------------------------------------------ */
 static void gc_loop(void) {
-    while (true) {
-        for (int i = 0; i < N; i++) {
+    while (1) {
+        int i;
+        for (i = 0; i < N; i++) {
             SockInfo *s = &g_sm->sock[i];
             ktp_lock(&s->lock);
             if (s->state == ST_ALLOTTED && s->owner_pid > 0) {
@@ -467,7 +487,7 @@ static void gc_loop(void) {
             ktp_unlock(&s->lock);
         }
         struct timespec ts; ts.tv_sec = 2; ts.tv_nsec = 0;
-        nanosleep(&ts, nullptr);
+        nanosleep(&ts, NULL);
     }
 }
 
@@ -475,9 +495,10 @@ static void gc_loop(void) {
 /* SM lifecycle + signals                                              */
 /* ------------------------------------------------------------------ */
 static void cleanup(void) {
-    if (g_gc_pid > 0) { kill(g_gc_pid, SIGKILL); waitpid(g_gc_pid, nullptr, 0); }
+    if (g_gc_pid > 0) { kill(g_gc_pid, SIGKILL); waitpid(g_gc_pid, NULL, 0); }
     if (g_sm) {
-        for (int i = 0; i < N; i++) pthread_mutex_destroy(&g_sm->sock[i].lock);
+        int i;
+        for (i = 0; i < N; i++) pthread_mutex_destroy(&g_sm->sock[i].lock);
         pthread_mutex_destroy(&g_sm->ctrl_mutex);
         sem_destroy(&g_sm->sem_submit);
         sem_destroy(&g_sm->sem_done);
@@ -486,18 +507,18 @@ static void cleanup(void) {
     shm_unlink(KTP_SHM_NAME);
 }
 
-static void on_signal(int) { g_stop.store(1); }
-static void on_usr1(int) { g_dump.store(1); }
+static void on_signal(int sig) { (void)sig; g_stop = 1; }
+static void on_usr1(int sig) { (void)sig; g_dump = 1; }
 
 static void init_shared_mem(void) {
     shm_unlink(KTP_SHM_NAME);                     /* clear any stale region */
     int fd = shm_open(KTP_SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (fd < 0) { perror("shm_open"); exit(1); }
     if (ftruncate(fd, sizeof(SharedMem)) < 0) { perror("ftruncate"); exit(1); }
-    void *p = mmap(nullptr, sizeof(SharedMem), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *p = mmap(NULL, sizeof(SharedMem), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (p == MAP_FAILED) { perror("mmap"); exit(1); }
-    g_sm = reinterpret_cast<SharedMem *>(p);
+    g_sm = (SharedMem *)p;
     memset(g_sm, 0, sizeof(SharedMem));
 
     pthread_mutexattr_t ma;
@@ -505,7 +526,8 @@ static void init_shared_mem(void) {
     pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
     pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
     pthread_mutex_init(&g_sm->ctrl_mutex, &ma);
-    for (int i = 0; i < N; i++) {
+    int i;
+    for (i = 0; i < N; i++) {
         pthread_mutex_init(&g_sm->sock[i].lock, &ma);
         g_sm->sock[i].state = ST_FREE;
         g_sm->sock[i].udp_fd = -1;
@@ -527,11 +549,11 @@ int main(void) {
 
     struct sigaction sa; memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_signal;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
     struct sigaction su; memset(&su, 0, sizeof(su));
     su.sa_handler = on_usr1;
-    sigaction(SIGUSR1, &su, nullptr);
+    sigaction(SIGUSR1, &su, NULL);
 
     g_gc_pid = fork();
     if (g_gc_pid == 0) { gc_loop(); _exit(0); }    /* child: GC */
@@ -540,8 +562,13 @@ int main(void) {
            N, T, (double)P, (double)g_drop_p);
     fflush(stdout);
 
-    std::thread tc(thread_C), tr(thread_R), ts(thread_S);
-    tc.join(); tr.join(); ts.join();
+    pthread_t tc, tr, ts;
+    pthread_create(&tc, NULL, thread_C, NULL);
+    pthread_create(&tr, NULL, thread_R, NULL);
+    pthread_create(&ts, NULL, thread_S, NULL);
+    pthread_join(tc, NULL);
+    pthread_join(tr, NULL);
+    pthread_join(ts, NULL);
 
     cleanup();
     printf("[init] stopped, shared memory removed.\n");
