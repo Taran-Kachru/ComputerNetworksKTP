@@ -67,15 +67,19 @@ symbols in libc.)
 ## Run
 
 ```sh
-# 1. start the init process (creates the shared memory; Ctrl-C to stop)
+# 1. generate test data (creates data/input_bin.dat ~200 KB)
+bash tests/gen_files.sh
+
+# 2. start the init process (creates the shared memory; Ctrl-C to stop)
 ./initksocket &
 
-# 2. start the receiver, then the sender (local ip/port, remote ip/port, file)
+# 3. start the receiver, then the sender (local ip/port, remote ip/port, file)
 ./user2 127.0.0.1 5002 127.0.0.1 5001 received.dat &
-./user1 127.0.0.1 5001 127.0.0.1 5002 input.dat
+./user1 127.0.0.1 5001 127.0.0.1 5002 data/input_bin.dat
 
-# 3. verify
-cmp input.dat received.dat
+# 4. verify
+cmp data/input_bin.dat received.dat && echo "identical"
+kill %1   # stop initksocket
 ```
 
 Multiple sender/receiver pairs can run concurrently on different ports.
