@@ -111,6 +111,28 @@ The scripts cd to the project root automatically, so they work wherever the repo
 is unzipped. The average-transmissions-per-message results for varying `p` are
 tabulated at the top of `documentation.txt`.
 
+## Visualization (for a demo / presentation)
+
+A single script runs every test case live and renders the results as ASCII
+tables and bar charts directly in the terminal — no GUI or plotting tools
+needed:
+
+```sh
+bash tests/present.sh
+```
+
+It shows five views: (1) a correctness matrix (byte-identical under loss),
+(2) retransmission overhead vs drop probability against the selective-repeat
+lower bound `1/(1-p)`, (3) goodput vs loss, (4) the zero-window deadlock before
+and after the persist-probe fix, and (5) the garbage collector reclaiming a
+crashed process's socket. It pauses between sections when run interactively.
+
+```sh
+PRES_NOPAUSE=1 bash tests/present.sh   # run straight through (no Enter prompts)
+PRES_MSGS=120 PRES_REPEATS=5 bash tests/present.sh   # larger/smoother sample
+NO_COLOR=1 bash tests/present.sh       # plain output (e.g. for logging)
+```
+
 ## Notes
 
 - `T` (retransmission timeout) and `P` (default drop probability) are defined in

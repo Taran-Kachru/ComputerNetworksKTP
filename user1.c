@@ -2,7 +2,7 @@
  *
  * usage: user1 <src_ip> <src_port> <dst_ip> <dst_port> <infile> [stats_out]
  *   binds local (src_ip:src_port), peer (dst_ip:dst_port), sends <infile>.
- *   If stats_out is given, writes "tx_total msgs_unique avg" to it.
+ *   If stats_out is given, writes "tx_total msgs_unique avg bytes elapsed_s kbps".
  */
 #include "ksocket.h"
 #include <arpa/inet.h>
@@ -15,6 +15,11 @@
 static void nap(long ms) {
     struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms % 1000) * 1000000L;
     nanosleep(&ts, NULL);
+}
+
+static double now_sec(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
 int main(int argc, char **argv) {
@@ -44,13 +49,14 @@ int main(int argc, char **argv) {
 
     char buf[MSG_SIZE];
     size_t r;
-    unsigned long long chunks = 0;
+    unsigned long long chunks = 0, total_bytes = 0;
+    double t0 = now_sec();
     while ((r = fread(buf, 1, MSG_SIZE, f)) > 0) {
         while (k_sendto(sock, buf, r, 0, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
             if (k_errno == ENOSPACE) { nap(5); continue; }   /* buffer full: retry */
             fprintf(stderr, "k_sendto failed (err %d)\n", k_errno); fclose(f); return 1;
         }
-        chunks++;
+        chunks++; total_bytes += (unsigned long long)r;
     }
     fclose(f);
 
@@ -62,15 +68,23 @@ int main(int argc, char **argv) {
 
     /* drain: wait until every message (incl. EOF marker) is acknowledged */
     while (k_outstanding(sock) > 0) nap(20);
+    double t1 = now_sec();
 
     unsigned long long tx = 0, uniq = 0;
     k_stats(sock, &tx, &uniq);
     double avg = uniq ? (double)tx / (double)uniq : 0.0;
-    printf("[user1] sent %llu data chunks + EOF; unique=%llu tx_total=%llu avg=%.4f\n",
-           chunks, uniq, tx, avg);
+    double elapsed = t1 - t0; if (elapsed < 1e-9) elapsed = 1e-9;
+    double kbps = ((double)total_bytes / 1024.0) / elapsed;
+    printf("[user1] sent %llu data chunks + EOF; unique=%llu tx_total=%llu avg=%.4f "
+           "bytes=%llu time=%.3fs rate=%.1f KB/s\n",
+           chunks, uniq, tx, avg, total_bytes, elapsed, kbps);
     if (stats_out) {
         FILE *so = fopen(stats_out, "w");
-        if (so) { fprintf(so, "%llu %llu %.6f\n", tx, uniq, avg); fclose(so); }
+        if (so) {
+            fprintf(so, "%llu %llu %.6f %llu %.6f %.3f\n",
+                    tx, uniq, avg, total_bytes, elapsed, kbps);
+            fclose(so);
+        }
     }
 
     k_close(sock);
