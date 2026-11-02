@@ -1,0 +1,17 @@
+# Makefile.init - builds the init executable (R/S threads + GC + shared memory).
+CXX      = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2
+LDLIBS   = -L. -lksocket -pthread -lrt
+
+all: initksocket
+
+libksocket.a:
+	$(MAKE) -f Makefile.lib
+
+initksocket: initksocket.cpp libksocket.a ksocket.h ktp_internal.h
+	$(CXX) $(CXXFLAGS) initksocket.cpp -o initksocket $(LDLIBS)
+
+clean:
+	rm -f initksocket
+
+.PHONY: all clean

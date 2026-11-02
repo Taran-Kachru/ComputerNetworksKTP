@@ -1,0 +1,393 @@
+==============================================================================
+ KTP : Reliable, window-based, message-oriented transport over UDP
+ documentation.txt
+==============================================================================
+
+------------------------------------------------------------------------------
+ 1. RESULTS TABLE : average number of transmissions per message vs p
+------------------------------------------------------------------------------
+Setup : one user1 -> user2 pair, same input file, T = 5 s (as submitted),
+        receiver buffer = 10, swnd(max) = 10, message = 512 B.
+Metric: avg transmissions/message = (total DATA transmissions, including every
+        retransmission and zero-window probe) / (number of distinct messages
+        generated from the file, including the end-of-stream marker).
+Integrity: every run was verified byte-identical with `cmp` (OK = identical).
+
+File used for the table : 112640 bytes (110 KB) = 220 data chunks + 1 EOF
+                          marker = 221 unique messages.  (> 256 messages are
+                          exercised by the other tests; this file still crosses
+                          enough window slides to retransmit heavily under loss.)
+
+   +--------+----------------------------+-----------+----------+-----------+
+   |   p    | avg transmissions / message|  tx_total |  #msgs   | integrity |
+   +--------+----------------------------+-----------+----------+-----------+
+   |  0.05  |           1.2262           |    271    |   221    |    OK     |
+   |  0.10  |           1.3846           |    306    |   221    |    OK     |
+   |  0.15  |           1.7059           |    377    |   221    |    OK     |
+   |  0.20  |           1.9457           |    430    |   221    |    OK     |
+   |  0.25  |           2.2715           |    502    |   221    |    OK     |
+   |  0.30  |           2.4932           |    551    |   221    |    OK     |
+   |  0.35  |           2.4480           |    541    |   221    |    OK     |
+   |  0.40  |           2.9548           |    653    |   221    |    OK     |
+   |  0.45  |           3.4389           |    760    |   221    |    OK     |
+   |  0.50  |           3.7466           |    828    |   221    |    OK     |
+   +--------+----------------------------+-----------+----------+-----------+
+   (T = 5 s; receiver buffer = 10; swnd(max) = 10; message = 512 B.)
+
+Observations:
+ - At p = 0 every message is sent exactly once (avg = 1.00; verified separately).
+ - As p grows, both DATA and ACK packets are dropped by dropMessage(p), so more
+   timeouts fire and avg transmissions/message rises from ~1.23 at p=0.05 to
+   ~3.75 at p=0.50.  The rise is overall monotonic with small run-to-run
+   variation (e.g. 0.35 vs 0.30) because the drops are random per run.
+ - A single lost DATA or lost ACK both cause a retransmission of the whole
+   outstanding window on timeout, so the growth is faster than linear in p.
+ - Every run transferred the file byte-for-byte correctly, including runs that
+   cross the 8-bit sequence-number wraparound (the file is 200+ messages).
+
+Note on T and runtime (see also "vary T" at the end): with T = 5 s the high-p
+runs are slow because each loss costs a 5 s timeout.  The *count* of
+transmissions is independent of T on loopback (RTT << 1 ms, so no spurious
+timeouts); only the wall-clock time depends on T.  The table above is produced
+with the submitted T = 5.  A run-time-only override (env KTP_T) exists purely to
+speed up development/CI; it does not change behaviour or the header's #define T 5.
+
+------------------------------------------------------------------------------
+ 2. FILES
+------------------------------------------------------------------------------
+ ksocket.h        - public library header (API + all #defines + packet format)
+ ksocket.cpp      - library implementation (user-process side of the API)
+ ktp_internal.h   - internal header: shared-memory layout + helpers, shared by
+                    the library and the init process (kept out of ksocket.h so
+                    user programs see only the public API)
+ initksocket.cpp  - init process: threads R, S, C + garbage-collector child
+ user1.cpp        - test sender (reads a file, k_sendto)
+ user2.cpp        - test receiver (k_recvfrom, writes a file)
+ Makefile.lib     - builds libksocket.a with ar
+ Makefile.init    - builds the init executable
+ Makefile.user    - builds user1 and user2
+ Makefile         - top-level; invokes the three sub-makefiles
+ tests/           - test scripts and the experiment driver
+
+------------------------------------------------------------------------------
+ 3. C -> C++ RENAME AND THE extern "C" INTERFACE  (design decision)
+------------------------------------------------------------------------------
+The assignment text names the sources ksocket.c / initksocket.c / user1.c /
+user2.c (C).  This submission is written in C++17 and compiled with
+`g++ -std=c++17 -Wall -Wextra`, so the sources use the .cpp extension; the
+header stays ksocket.h.  To keep the API callable exactly like the UDP calls it
+mirrors (unmangled C symbol names, C-compatible signatures), every declaration
+in ksocket.h is wrapped in `extern "C" { ... }` guarded by `#ifdef __cplusplus`.
+A user may therefore include ksocket.h from C or C++ and link libksocket.a the
+same way one links libm.a for sqrt().  C++ is used where it helps (RAII is not
+needed across the POD shared memory, but std::thread / std::atomic are used in
+init, and static_assert enforces that every shared-memory struct is POD).
+SOCK_KTP, T, P, N and the error codes remain plain #defines in ksocket.h, and
+`#define T 5` is present exactly as required.
+
+Everything placed in shared memory is plain-old-data (fixed arrays, integers,
+pthread_mutex_t, sem_t).  No std::string/vector/map, no virtual functions, no
+pointers cross the shared-memory boundary.  This is enforced at compile time:
+  static_assert(std::is_trivially_copyable<SendSlot/RecvSlot/SockInfo/
+                ControlReq>::value, ...);
+  static_assert(std::is_standard_layout<SharedMem>::value, ...);
+
+------------------------------------------------------------------------------
+ 4. DATA STRUCTURES
+------------------------------------------------------------------------------
+--- ksocket.h ---
+
+KTPHeader (6 bytes) - the KTP packet header:
+   uint8_t  type   : KTP_DATA or KTP_ACK
+   uint8_t  seq    : DATA = this message's sequence number;
+                     ACK  = last in-order sequence number received (cumulative)
+   uint8_t  rwnd   : ACK = advertised receiver free space (in messages)
+   uint8_t  flags  : bit0 KTP_FLAG_EOF (end-of-stream marker),
+                     bit1 KTP_FLAG_PROBE (zero-window persist probe)
+   uint16_t len    : DATA = number of valid payload bytes (0..512)
+
+KTPPacket - KTPHeader followed by char data[512].  A DATA packet is sent as
+   sizeof(KTPHeader)+len bytes; an ACK as sizeof(KTPHeader) bytes.
+
+--- ktp_internal.h (shared memory) ---
+
+SendSlot - one entry of the sender buffer:
+   in_use, seq, len, eof, sent (transmitted at least once), data[512].
+
+RecvSlot - one entry of the receiver buffer:
+   in_use, seq, len, eof, data[512].
+
+SockInfo - one KTP socket entry (SM[i]):
+   state        : ST_FREE / ST_ALLOTTED / ST_TO_REAP
+   owner_pid    : pid of the process that created the socket (for GC)
+   udp_fd       : the UDP socket fd (valid only inside the init process)
+   src_ip/port  : bound local address
+   dst_ip/port  : peer address (from k_bind)
+   bound        : 1 once k_bind has succeeded
+   lock         : process-shared robust mutex protecting all fields below
+   -- sender --
+   sbuf[16]     : ring of SendSlot (physical 16, logical capacity 10)
+   send_base    : oldest unacknowledged sequence number
+   next_seq     : next sequence number to assign to application data
+   swnd         : current sender window size (<=10), from advertised rwnd
+   adv_rwnd     : last receiver free space advertised in an ACK
+   last_ack     : last cumulative ACK sequence seen (duplicate-ACK detection)
+   have_last_ack: 0 until the first ACK is processed
+   timer_ns     : time the in-flight window was last (re)transmitted
+   probe_ns     : time of the last zero-window probe
+   send_closed  : set once the EOF marker has been queued
+   -- receiver --
+   rbuf[16]     : ring of RecvSlot (physical 16, logical capacity 10)
+   rcv_base     : next sequence number the application will read
+   expected     : next in-order sequence number expected from the network
+   started      : set after the first data message
+   nospace      : set when the receive buffer filled (window-reopen pending)
+   nospace_expected : value of `expected` when nospace was set (resume detect)
+   reopen_dropped   : test knob (drop this many window-reopen ACKs; -1 = all)
+   -- instrumentation --
+   tx_total     : total DATA transmissions (incl. retransmissions and probes)
+   msgs_unique  : distinct data messages generated (file chunks + EOF marker)
+
+Why the ring arrays are size 16 while the capacity is 10:
+   Sequence numbers are 8-bit and wrap mod 256.  Indexing a size-10 ring as
+   seq%10 collides across the 255->0 wrap because 256 % 10 != 0 (e.g. seq 255
+   and seq 5 both map to index 5), which silently drops a message and deadlocks
+   the transfer.  The arrays are therefore sized 16 (a power of two that divides
+   256) and indexed with seq%16; since 256 % 16 == 0 and at most 10 slots are
+   ever in use, there is never a collision, across the wrap or otherwise.  The
+   LOGICAL window / buffer capacity (rwnd, ENOSPACE, acceptance) stays 10.
+
+ControlReq - one control-channel request/response (socket/bind/close).
+   op, pid, sockid, src_ip/port, dst_ip/port, ret (result), err (error code).
+
+SharedMem - the whole shared region:
+   ctrl_mutex (serialises control-channel users), sem_submit, sem_done,
+   req (the single in-flight ControlReq), sock[N] (the N socket entries).
+
+------------------------------------------------------------------------------
+ 5. FUNCTIONS
+------------------------------------------------------------------------------
+--- ksocket.cpp (library) ---
+ k_errno_location()  : returns &(per-thread KTP error variable); k_errno macro.
+ sm_attach()         : lazily shm_open+mmap the existing SM (created by init).
+ dropMessage(p)      : returns 1 with probability p else 0 (rand_r based).
+ control_call()      : lock ctrl_mutex, post request, wait for init, read reply.
+ k_socket()          : validates SOCK_KTP, asks init (OP_SOCKET) to create a UDP
+                       socket and allot an SM entry; returns the KTP socket id or
+                       -1/ENOSPACE if the table is full.
+ k_bind()            : asks init (OP_BIND) to bind the UDP socket to the source
+                       address and stores the destination in the SM entry.
+ k_sendto()          : if the destination matches the bound peer and the send
+                       buffer has room, copies the 512-B message into the sender
+                       buffer and assigns the next sequence number; thread S does
+                       the actual sending.  -1/ENOTBOUND on wrong dest, -1/ENOSPACE
+                       on a full buffer.  A len==0 call enqueues the EOF marker.
+ k_recvfrom()        : returns the next in-order message (header stripped) and
+                       frees its slot (this grows rwnd); returns payload bytes,
+                       0 for the EOF marker (end-of-stream), -1/ENOMESSAGE if none.
+ k_close()           : asks init (OP_CLOSE) to close the UDP socket and free the
+                       SM entry.
+ k_stats()           : (helper) returns tx_total and msgs_unique for a socket.
+ k_outstanding()     : (helper) number of unacknowledged messages; lets a sender
+                       drain before k_close so the file tail is not lost.
+
+--- initksocket.cpp (init process) ---
+ clear_sock_dynamic(): reset an entry's dynamic fields (keeps the mutex valid).
+ recv_free()         : receiver free space = RECV_BUF_SIZE - (#buffered slots).
+ send_ack()/send_data(): build and sendto an ACK / DATA packet.
+ reap_dead()         : close fd and free entries that GC marked ST_TO_REAP.
+ do_op_socket/bind/close(): perform the control-channel operations (init owns
+                       all UDP fds; see section 6).
+ thread_C()          : waits on sem_submit (0.2 s timed), services one control
+                       request, and reaps dead entries; also dumps state on USR1.
+ handle_data()       : receiver logic - duplicate detection, in-order delivery
+                       with cascade of buffered out-of-order messages, out-of-
+                       order buffering within rwnd (no ACK), no-space handling,
+                       and ACK generation with the updated rwnd.
+ handle_ack()        : sender logic - cumulative ACK slides the window and
+                       updates the window size from the piggybacked rwnd; a
+                       duplicate ACK updates only the window size (never slides);
+                       forces a fast retransmit when the window reopens from 0.
+ thread_R()          : select() over all active UDP sockets (0.5 s timeout, fd
+                       set rebuilt each pass so new/closed sockets are picked up);
+                       after every recvfrom it calls dropMessage(P) FIRST and, if
+                       1, discards the packet; otherwise dispatches to handle_data
+                       / handle_ack.
+ thread_S()          : wakes on a fine nanosleep tick; per socket it (1) retrans-
+                       mits the whole in-flight window if T has elapsed, (2) sends
+                       new messages that fit the effective window, (3) sends a
+                       zero-window persist probe when the window is 0 and data is
+                       pending, and (4) re-advertises the receiver window when
+                       space has reopened (the nospace fix, section 7).
+ gc_loop()           : the GC child - kill(owner_pid,0) on each allotted entry;
+                       ESRCH -> mark ST_TO_REAP.
+ cleanup()           : kill GC, destroy mutexes/sems, munmap, shm_unlink.
+ init_shared_mem()   : create the SM, init process-shared robust mutexes and the
+                       semaphores, mark all entries free.
+ main()              : set up signals (SIGINT/SIGTERM clean shutdown, SIGUSR1
+                       debug dump), fork the GC child, start threads C/R/S.
+
+------------------------------------------------------------------------------
+ 6. PROTOCOL, HEADER FORMAT, AND THE UDP-SOCKET-OWNERSHIP DESIGN
+------------------------------------------------------------------------------
+Header format : see KTPHeader in section 4.  Sequence numbers are 8-bit, start
+at 1, and wrap mod 256; all window/sequence comparisons use serial-number
+arithmetic (ktp_sdiff(a,b) = (int8_t)(a-b)); the window (<=10) is far smaller
+than 128 so comparisons are unambiguous across the wrap.
+
+End-of-file / partial last chunk : each file chunk is a DATA message whose len
+is the real byte count (the final data chunk may be < 512).  End of stream is a
+dedicated in-band message with len==0 and KTP_FLAG_EOF, queued by a zero-length
+k_sendto.  It flows through the normal reliable, in-order pipeline, so the file
+boundary is delivered reliably and in order.  k_recvfrom returns >0 for data,
+0 when it delivers the EOF marker (UNIX end-of-stream semantics), and
+-1/ENOMESSAGE when nothing is ready.  This needs no out-of-band file-size
+exchange and cannot corrupt or truncate the transferred file.
+
+Who owns the UDP socket (important design decision):
+File descriptors are per-process, so a UDP fd created in a user process could
+not be used by threads R/S in the init process.  Therefore THE INIT PROCESS
+OWNS ALL UDP SOCKETS.  k_socket/k_bind/k_close do not touch fds directly; they
+submit a request over a shared-memory control channel (ctrl_mutex + sem_submit
++ sem_done + one ControlReq slot) and block until init's thread C has performed
+the socket()/bind()/close() on their behalf.  k_sendto/k_recvfrom touch only SM
+buffers and run entirely in the user process.  This is a sound, race-free design
+in which the fds always live in the process (init) whose threads R and S use them.
+
+Receiver behaviour (handle_data): an in-order message is stored (header
+stripped), `expected` advances, any now-contiguous buffered out-of-order
+messages are delivered too, rwnd is recomputed and an ACK carrying the last
+in-order sequence + new rwnd is sent.  An out-of-order message within rwnd is
+buffered but NOT ACKed.  Duplicates (already delivered, or a probe, or a message
+that does not fit) are dropped; a duplicate/probe is re-ACKed with the current
+rwnd (this is required for liveness - it is what lets a zero-window probe always
+elicit a fresh window advertisement).
+
+Sender behaviour (handle_ack + thread_S): swnd starts at 10; the effective
+window is min(swnd, advertised rwnd) and never exceeds the receiver's advertised
+free space.  A cumulative ACK slides the window and updates the window size from
+the piggybacked rwnd.  A duplicate ACK updates only the window size.  If no ACK
+arrives within T seconds, the whole in-flight window is retransmitted.
+
+------------------------------------------------------------------------------
+ 7. THE nospace PROBLEM : identification, failure modes, fix, and test
+------------------------------------------------------------------------------
+Scenario.  The receiver buffer fills, so it advertises rwnd = 0 and sets the
+`nospace` flag.  The sender's effective window becomes 0 and, because every
+message it had sent was already cumulatively ACKed, it has NOTHING in flight and
+goes completely silent - its retransmission timer never fires (there is nothing
+to retransmit).  Later the application reads messages (k_recvfrom), freeing
+space.  The textbook receiver (as described in the spec) sends ONE duplicate ACK
+carrying the new rwnd and clears `nospace`.
+
+Failure modes identified:
+ (a) LOST REOPEN ACK -> PERMANENT DEADLOCK.  That single duplicate ACK can be
+     dropped by dropMessage / lost.  The sender is silent, so no new data flows,
+     so the receiver never generates another ACK, so the sender stays at window 0
+     forever.
+ (b) Clearing `nospace` after a single send means the receiver never retries,
+     cementing (a).
+ (c) select()-timeout starvation: if the reopen check only runs on a select()
+     timeout, continuous traffic on OTHER sockets keeps select readable and the
+     check is delayed/starved.
+ (d) Race between the application freeing space in k_recvfrom and R/S reading
+     `nospace`/free space -> a stale rwnd or a missed update unless both are
+     done under the entry lock.
+ (e) The sender must treat a window-update duplicate ACK as window-size-only and
+     never as a cumulative ACK that would (wrongly) slide the window.
+ (f) The original rwnd=0 ACK can also be lost; then the sender keeps sending into
+     a full buffer, the receiver drops for no-space and (here) still ACKs rwnd=0,
+     and the sender's timeout retransmits - self-healing, but only because such
+     packets are always ACKed.
+
+Fix (guarantees no permanent deadlock for ANY drop probability p < 1):
+ 1. SENDER ZERO-WINDOW PERSIST PROBE (primary).  thread_S, while the effective
+    window is 0 and data is pending, sends one probe (the message at send_base,
+    flagged PROBE) once per persist interval.  The receiver ALWAYS answers any
+    DATA - including a probe, a duplicate, or a message it cannot buffer - with
+    an ACK carrying the current rwnd.  Each probe+ACK survives with probability
+    >= (1-p)^2, so over repeated independent probes the chance of a permanent
+    deadlock tends to 0 for every p < 1.  This alone breaks the deadlock.
+ 2. RECEIVER RE-ADVERTISES the window every S tick while space is open, instead
+    of a single clear-and-forget, until it sees the sender resume (expected has
+    advanced) or the buffer is fully drained - fixes (b).
+ 3. The reopen handling lives in thread_S (nanosleep cadence), NOT in R's select
+    timeout - fixes (c).
+ 4. All nospace / rwnd / free-space reads and writes are under the per-entry
+    lock - fixes (d).
+ 5. handle_ack updates window size only on a duplicate ACK - fixes (e).
+ 6. A no-space / duplicate / probe DATA is always ACKed with the current rwnd -
+    fixes (f).
+
+Deterministic test (env-gated; defaults OFF so submitted behaviour is unchanged):
+   KTP_DROP_REOPEN=k   receiver drops the first k window-reopen ACKs (-1 = all)
+   KTP_SLOW_READ_MS=ms user2 sleeps ms between reads (forces the buffer to fill)
+   KTP_DISABLE_PERSIST=1  turns the persist-probe fix OFF (to show the hang)
+tests/nospace_test.sh runs both halves with a slow reader and ALL reopen ACKs
+dropped (KTP_DROP_REOPEN=-1):
+   TEST A  (KTP_DISABLE_PERSIST=1)  -> transfer HANGS (received only a few KB).
+   TEST B  (persist probe ON, default) -> transfer COMPLETES, file byte-identical.
+This proves the persist probe is exactly what removes the deadlock.  The normal
+dropMessage(P) calls in thread R are untouched throughout.
+
+------------------------------------------------------------------------------
+ 8. LOCKING STRATEGY
+------------------------------------------------------------------------------
+ - One process-shared ROBUST mutex per SockInfo protects that entry's buffers,
+   windows, flags and counters.  Robust + EOWNERDEAD recovery (ktp_lock) means a
+   user process dying while holding a lock cannot wedge init.
+ - The control channel is serialised by ctrl_mutex; entry ALLOCATION happens
+   only in init's single thread C, so there is no allocation race.
+ - A lock is never held across a blocking call: R copies the fd under the lock
+   and does recvfrom outside it; S builds the list of packets to send under the
+   lock and sendto()s them after releasing it.
+ - All accesses to the lifecycle fields state/udp_fd/bound are done under the
+   entry lock, so thread C (create/bind/close) never races R/S.
+ - Verified with ThreadSanitizer (0 data races) and AddressSanitizer+
+   UndefinedBehaviorSanitizer (clean) on the full multi-process run.
+
+------------------------------------------------------------------------------
+ 9. INSTRUMENTATION (experiment metric)
+------------------------------------------------------------------------------
+Per socket the library counts tx_total (every DATA sendto by thread S, including
+retransmissions and probes) and msgs_unique (every distinct message assigned a
+sequence number, i.e. file chunks + the EOF marker).  user1 reads them with
+k_stats() and reports avg = tx_total / msgs_unique.  tests/experiment.sh sweeps
+p = 0.05 .. 0.50 and verifies integrity each run.
+
+------------------------------------------------------------------------------
+ 10. BUILDING AND RUNNING
+------------------------------------------------------------------------------
+ make                         # builds libksocket.a, initksocket, user1, user2
+ ./initksocket &              # start init (creates shared memory; Ctrl-C stops)
+ ./user2 127.0.0.1 5002 127.0.0.1 5001 out.dat &     # receiver
+ ./user1 127.0.0.1 5001 127.0.0.1 5002 in.dat        # sender
+ cmp in.dat out.dat           # verify
+Multiple pairs run concurrently on different ports (see tests/concurrent.sh).
+
+Run-time-only development knobs (do NOT change the submitted default behaviour;
+the header still has #define T 5 and #define P 0.05):
+   KTP_P=<p>   drop probability thread R passes to dropMessage (default P)
+   KTP_T=<s>   retransmission/persist timeout in seconds (default T=5); used only
+               to speed up testing - the final results table uses T = 5.
+
+------------------------------------------------------------------------------
+ 11. "VARY T" NOTE (optional experiment, p = 0)
+------------------------------------------------------------------------------
+Thread S uses nanosleep (not sleep) so sub-second timers are possible.  With
+p = 0 and no losses, lowering T has no effect on correctness or on the
+transmission count (no spurious timeouts occur because the loopback RTT is far
+below any T tested); it only bounds how long a genuine loss would take to
+recover.  Under losses, a smaller T recovers faster but risks spurious
+retransmissions when T approaches the RTT; on loopback the RTT is ~tens of
+microseconds, so even small T values stay safe here.  The submitted default is
+T = 5 s as required.
+
+------------------------------------------------------------------------------
+ 12. ENVIRONMENT NOTE
+------------------------------------------------------------------------------
+The code is portable Linux C++17 (POSIX shared memory, process-shared robust
+pthread mutexes, semaphores, select, nanosleep, fork, kill).  It was built and
+tested with g++ 13 inside a Linux container; the development host happened to be
+Windows, but nothing Windows-specific is used.  Link flags: -pthread -lrt.
+==============================================================================

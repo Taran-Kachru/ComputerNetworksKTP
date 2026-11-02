@@ -1,0 +1,25 @@
+# Build artifacts
+*.o
+*.a
+initksocket
+user1
+user2
+tests/errtest
+tests/holder
+*.asan
+*.tsan
+
+# Submission archive
+ktp_submit.tar.gz
+
+# Test scratch / generated data
+data/
+*.dat
+tests/*.out
+tests/*.log
+
+# Editor / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
