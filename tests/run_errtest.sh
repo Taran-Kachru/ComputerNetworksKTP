@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 pkill -9 -x initksocket 2>/dev/null; rm -f /dev/shm/ktp_sm; sleep 0.3
 gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE tests/errtest.c -o tests/errtest -L. -lksocket -pthread -lrt || exit 1
 KTP_P=0 KTP_T=1 ./initksocket >/tmp/init.log 2>&1 &

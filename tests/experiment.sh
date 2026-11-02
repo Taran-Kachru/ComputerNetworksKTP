@@ -2,7 +2,7 @@
 # experiment.sh [infile] [outcsv]
 # Runs the transfer for p = 0.05, 0.10, ... 0.50 with T=5 and records the
 # average number of transmissions per message.  Verifies file integrity each run.
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 INF=${1:-data/exp_input.dat}
 OUT=${2:-tests/results.csv}
 # >100KB test file (kept fixed across all p so the comparison is fair).

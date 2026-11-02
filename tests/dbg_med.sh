@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # arg1 = number of messages (file = arg1*512 bytes)
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 MSGS=${1:-300}
 BYTES=$((MSGS*512))
 pkill -9 -x initksocket 2>/dev/null; pkill -9 -x user1 2>/dev/null; pkill -9 -x user2 2>/dev/null

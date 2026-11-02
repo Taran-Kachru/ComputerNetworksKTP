@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sanitizer runs: ASan+UBSan across all components, and TSan on the threaded init.
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 export KTP_T=1
 head -c 51200 /dev/urandom > data/san_in.dat    # 100 msgs
 

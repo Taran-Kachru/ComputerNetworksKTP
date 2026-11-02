@@ -2,7 +2,7 @@
 # run_pair.sh <p> <infile> <outfile> [slow_read_ms] [drop_reopen] [disable_persist] [timeout_s]
 # Starts init with drop prob <p>, runs one user1/user2 pair, compares files.
 # Exits 0 if identical, 1 otherwise. Prints stats line.
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 P=${1:-0}
 INF=${2:-data/input_bin.dat}
 OUTF=${3:-data/out_bin.dat}

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Master functional test suite (fast: uses KTP_T=1 to shorten retransmit waits;
-# correctness/counts are unaffected on localhost where RTT << 1ms).
-cd /work
+# Master functional test suite - runs every test case end to end.
+# Portable: cd's to the project root wherever the repo was unzipped.
+# Builds without make (uses build.sh).  Uses KTP_T=1 to shorten retransmit waits;
+# correctness/counts are unaffected on localhost where RTT << 1ms.
+cd "$(dirname "$0")/.." || exit 1
 export KTP_T=1
-make >/dev/null 2>&1 || { echo "BUILD FAILED"; exit 1; }
+
+bash build.sh >/dev/null 2>&1 || { echo "BUILD FAILED"; bash build.sh; exit 1; }
+bash tests/gen_files.sh >/dev/null 2>&1 || { echo "could not generate test files"; exit 1; }
+
 pass=0; fail=0
 note() { if [ "$1" = 0 ]; then echo "PASS: $2"; pass=$((pass+1)); else echo "FAIL: $2"; fail=$((fail+1)); fi; }
 

@@ -6,7 +6,7 @@
 # WITH the fix (persist probe, default) it must COMPLETE with an identical file.
 # Normal dropMessage(P) in R is untouched (p=0 here so only our deterministic
 # reopen drops + flow control are exercised).
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 rm -f data/ns_in.dat; head -c 40960 /dev/urandom > data/ns_in.dat   # 80 msgs
 SLOW=25        # ms per read
 export KTP_T=1 # speed up probe/timeout for the test (header still #define T 5)

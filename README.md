@@ -38,11 +38,31 @@ packets.
 
 ## Build
 
-Requires a Linux toolchain (`gcc` with C11, `make`, `ar`). From the project root:
+Requires a Linux toolchain (`gcc` with C11, `ar`; `make` optional). From the
+project root:
 
 ```sh
-make            # builds libksocket.a, initksocket, user1, user2
+make              # builds libksocket.a, initksocket, user1, user2
 ```
+
+**Without make** — a plain `gcc`/`ar` build script is provided:
+
+```sh
+bash build.sh     # same outputs, no make needed
+```
+
+or run the four commands by hand:
+
+```sh
+gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE -c ksocket.c -o ksocket.o
+ar rcs libksocket.a ksocket.o
+gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE initksocket.c -o initksocket -L. -lksocket -pthread -lrt
+gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE user1.c -o user1 -L. -lksocket -pthread -lrt
+gcc -std=c11 -Wall -Wextra -O2 -D_GNU_SOURCE user2.c -o user2 -L. -lksocket -pthread -lrt
+```
+
+(If linking reports `cannot find -lrt`, drop `-lrt` — modern glibc has those
+symbols in libc.)
 
 ## Run
 
@@ -62,10 +82,29 @@ Multiple sender/receiver pairs can run concurrently on different ports.
 
 ## Testing
 
-The `tests/` directory contains scripts for the single-pair transfer, the loss
-sweep (`p = 0.05 … 0.50`), the wraparound case, the zero-window deadlock
-demonstration, multiple concurrent pairs, the error paths, and the garbage
-collector. The average-transmissions-per-message results for varying `p` are
+Run the whole test suite (it builds via `build.sh` first, then runs every case)
+from the project root:
+
+```sh
+bash tests/run_all.sh
+```
+
+Expected tail: `SUITE RESULT: 7 passed, 0 failed`. Individual cases can be run
+directly, e.g.:
+
+```sh
+bash tests/run_pair.sh 0   data/input_bin.dat data/out.dat   # single pair, no loss
+bash tests/run_pair.sh 0.3 data/input_bin.dat data/out.dat   # with 30% drops
+bash tests/dbg_med.sh 300        # sequence-number wraparound (>256 messages)
+bash tests/nospace_test.sh       # zero-window deadlock: hangs without fix, works with
+bash tests/concurrent.sh 0.1     # 3 concurrent pairs
+bash tests/run_errtest.sh        # ENOSPACE / ENOTBOUND / ENOMESSAGE
+bash tests/gc_test.sh            # garbage collector reclaims a killed process
+bash tests/experiment.sh         # p = 0.05..0.50 sweep -> tests/results.csv (T=5, slow)
+```
+
+The scripts cd to the project root automatically, so they work wherever the repo
+is unzipped. The average-transmissions-per-message results for varying `p` are
 tabulated at the top of `documentation.txt`.
 
 ## Notes

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 gcc -fsanitize=thread -g -std=c11 -Wall -Wextra -D_GNU_SOURCE ksocket.c initksocket.c -o initksocket.tsan -pthread -lrt 2>/dev/null
 pkill -9 -x initksocket.tsan 2>/dev/null; pkill -9 -x user1 2>/dev/null; pkill -9 -x user2 2>/dev/null; rm -f /dev/shm/ktp_sm; sleep 0.3
 head -c 20480 /dev/urandom > data/tsan_in.dat     # 40 msgs

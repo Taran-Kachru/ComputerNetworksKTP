@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 3 concurrent user1/user2 pairs on different ports, one init, one shared memory.
-cd /work
+cd "$(dirname "$0")/.." || exit 1
 export KTP_T=1
 P=${1:-0.1}
 pkill -9 -x initksocket 2>/dev/null; pkill -9 -x user1 2>/dev/null; pkill -9 -x user2 2>/dev/null
